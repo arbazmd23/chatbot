@@ -313,9 +313,34 @@ def get_ai_conversation_response(user_input, stage, context):
             "next_stage": "..."
         }}
 
+        CRITICAL PARSING RULES FOR INDIAN ADDRESSES:
+        1. The FIRST word(s) before any address indicators (numbers, "cross", "street", "road", "nagar", "layout") is the company/party NAME
+        2. Address indicators to watch for: cross, street, road, nagar, layout, colony, phase, sector, block, main
+        3. Indian state names: Karnataka, Maharashtra, Tamil Nadu, Telangana, Kerala, Andhra Pradesh, Gujarat, Rajasthan, etc.
+        4. If a state name like "Karnataka", "karnataka", "karnatake" is present, the country is "India"
+        5. Indian pincodes are 6 digits (e.g., 560001, 503401)
+
+        EXAMPLE PARSING:
+        Input: "munark 5th cross bradhshaws street nehrupuran bangalore karnataka 560001"
+        - "munark" = company_name (first token before "5th cross" address indicator)
+        - "5th cross bradhshaws street nehrupuran" = company_address
+        - "bangalore" = company_city
+        - "karnataka" = company_state
+        - "560001" = company_pincode
+        - "India" = company_country (inferred from Karnataka)
+
         EXTRACTION EXAMPLES:
         - User: "Acme Corp, 123 Main St, NYC, NY 10001, USA"
           extracted_fields: {{"company_name": "Acme Corp", "company_address": "123 Main St", "company_city": "NYC", "company_state": "NY", "company_pincode": "10001", "company_country": "USA"}}
+
+        - User: "munark 5th cross bradhshaws street, nehrupuran, bangalore, karnataka, 560001"
+          extracted_fields: {{"company_name": "munark", "company_address": "5th cross bradhshaws street, nehrupuran", "company_city": "bangalore", "company_state": "karnataka", "company_pincode": "560001", "company_country": "India"}}
+
+        - User: "TechSolutions Pvt Ltd 42 MG Road Koramangala Bangalore Karnataka 560034"
+          extracted_fields: {{"company_name": "TechSolutions Pvt Ltd", "company_address": "42 MG Road Koramangala", "company_city": "Bangalore", "company_state": "Karnataka", "company_pincode": "560034", "company_country": "India"}}
+
+        - User: "avinash 3rd cross jp nagar hubbli karnataka 503401"
+          extracted_fields: {{"other_party_name": "avinash", "other_party_address": "3rd cross jp nagar", "other_party_city": "hubbli", "other_party_state": "karnataka", "other_party_pincode": "503401", "other_party_country": "India"}}
 
         - User: "CloudSync Pro version 2.1"
           extracted_fields: {{"product_to_be_evaluated": "CloudSync Pro", "product_version": "2.1"}}
@@ -550,6 +575,34 @@ def handle_relationship_selection(relationship_type):
     st.session_state.messages.append({"role": "assistant", "content": response})
     st.rerun()
 
+def extract_name_from_address(text, field_prefix="company"):
+    """
+    Fallback regex extraction for Indian addresses.
+    Extracts name that appears before address indicators.
+    """
+    import re
+
+    # Address indicators that suggest the address portion is starting
+    address_indicators = r'(\d+(?:st|nd|rd|th)?\s*(?:cross|main|floor|street|road|nagar|layout|colony|phase|sector|block)|#?\d+[/-]\d+)'
+
+    result = {}
+    text_lower = text.lower()
+
+    # Try to find where address starts (after the name)
+    match = re.search(address_indicators, text_lower)
+
+    if match:
+        # Everything before the address indicator is likely the name
+        name_portion = text[:match.start()].strip()
+        if name_portion and len(name_portion) > 1:
+            # Clean up the name (remove trailing commas/spaces)
+            name_portion = re.sub(r'[,\s]+$', '', name_portion)
+            if name_portion:
+                result[f"{field_prefix}_name"] = name_portion.title()
+                print(f"[REGEX FALLBACK] Extracted {field_prefix}_name: {name_portion.title()}")
+
+    return result
+
 def process_conversation_with_ai(user_input):
     """Process user input using AI."""
 
@@ -660,6 +713,30 @@ def process_conversation_with_ai(user_input):
 
             # Increment question index after processing answer (only in data_collection stage)
             if st.session_state.conversation_stage == 'data_collection':
+                # Get current question before incrementing
+                current_idx = st.session_state.current_question_index
+                questions = BUYER_QUESTIONS if st.session_state.role == "buyer" else SUPPLIER_QUESTIONS
+
+                # Apply regex fallback for name extraction if AI missed it
+                if current_idx < len(questions):
+                    current_fields = questions[current_idx].get("fields", [])
+
+                    # Check if company_name should have been extracted but wasn't
+                    if "company_name" in current_fields:
+                        if not extracted_fields.get("company_name") and not st.session_state.contract_data["questions"].get("company_name"):
+                            fallback = extract_name_from_address(user_input, "company")
+                            for k, v in fallback.items():
+                                if not st.session_state.contract_data["questions"].get(k):
+                                    st.session_state.contract_data["questions"][k] = v
+
+                    # Check if other_party_name should have been extracted but wasn't
+                    if "other_party_name" in current_fields:
+                        if not extracted_fields.get("other_party_name") and not st.session_state.contract_data["questions"].get("other_party_name"):
+                            fallback = extract_name_from_address(user_input, "other_party")
+                            for k, v in fallback.items():
+                                if not st.session_state.contract_data["questions"].get(k):
+                                    st.session_state.contract_data["questions"][k] = v
+
                 st.session_state.current_question_index += 1
 
         # BACKWARD COMPATIBILITY: Extract and store single field value (old format)
@@ -690,6 +767,15 @@ def process_conversation_with_ai(user_input):
             response = result.get("response", "Excellent! I've collected all the necessary information.")
             response += "\n\nLet me prepare your contract document..."
             response += "\n\nPlease wait while I generate your Evaluation Agreement..."
+
+            # Enrich data before generating document
+            enrich_contract_data()
+
+            # Fallback: Calculate end date if AI didn't
+            calculate_end_date_fallback()
+
+            # Apply deterministic rules as final fallback
+            deterministic_enrichment()
 
             # Generate document
             generate_document()
@@ -734,11 +820,14 @@ def process_conversation_with_ai(user_input):
                     response += "\n\nExcellent! I've collected all the necessary information."
                     response += "\n\n🔍 Reviewing and finalizing details..."
 
-                    # Calculate end date from start date + evaluation period
-                    calculate_end_date()
-
                     # Enrich data before generating document
                     enrich_contract_data()
+
+                    # Fallback: Calculate end date if AI didn't
+                    calculate_end_date_fallback()
+
+                    # Apply deterministic rules as final fallback
+                    deterministic_enrichment()
 
                     response += "\n\n📝 Generating your Evaluation Agreement..."
 
@@ -763,42 +852,94 @@ def process_conversation_with_ai(user_input):
     if 'stage_changed' in locals() and stage_changed:
         st.rerun()
 
-def calculate_end_date():
-    """Calculate agreement_end_date from start_date + evaluation period."""
+def calculate_end_date_fallback():
+    """Fallback: Calculate end date using Python if AI didn't do it."""
     data = st.session_state.contract_data["questions"]
+
+    # Skip if already calculated
+    if data.get("agreement_end_date"):
+        print("[FALLBACK] End date already set, skipping")
+        return
+
     start_date_str = data.get("agreement_start_date", "")
     period_str = data.get("period_for_evaluation", "")
 
     if not start_date_str or not period_str:
+        print(f"[FALLBACK] Missing data - start: '{start_date_str}', period: '{period_str}'")
         return
 
-    # Extract days from period (e.g., "60 days" → 60)
+    # Extract days
     days_match = re.search(r'(\d+)', period_str)
     if not days_match:
+        print(f"[FALLBACK] Could not extract days from: {period_str}")
         return
     days = int(days_match.group(1))
 
-    # Parse start date (assuming current year)
+    # Parse start date
     try:
-        current_year = datetime.now().year
-        start_date = None
+        # Clean up date string (remove "st", "nd", "rd", "th")
+        clean_date = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', start_date_str)
 
-        # Handle various date formats
-        for fmt in ["%B %d", "%b %d", "%d %B", "%d %b", "%B %d, %Y", "%b %d, %Y"]:
+        start_date = None
+        for fmt in ["%B %d, %Y", "%B %d %Y", "%B %d", "%b %d, %Y", "%b %d"]:
             try:
-                start_date = datetime.strptime(start_date_str.strip(), fmt)
+                start_date = datetime.strptime(clean_date.strip(), fmt)
                 if "%Y" not in fmt:
-                    start_date = start_date.replace(year=current_year)
+                    start_date = start_date.replace(year=2026)
                 break
             except ValueError:
                 continue
 
         if start_date:
             end_date = start_date + timedelta(days=days)
-            data["agreement_end_date"] = end_date.strftime("%B %d")
-            print(f"Calculated end date: {data['agreement_end_date']} (start: {start_date_str} + {days} days)")
+            data["agreement_end_date"] = end_date.strftime("%B %d, %Y")
+            print(f"[FALLBACK] Calculated end date: {data['agreement_end_date']} (from {start_date_str} + {days} days)")
+        else:
+            print(f"[FALLBACK] Could not parse date: {start_date_str}")
     except Exception as e:
-        print(f"Could not calculate end date: {e}")
+        print(f"[FALLBACK] Error calculating end date: {e}")
+
+def deterministic_enrichment():
+    """
+    Apply deterministic rules to fill missing fields.
+    Runs AFTER AI enrichment as a safety net.
+    """
+    data = st.session_state.contract_data["questions"]
+
+    # Indian state to country mapping (handles typos like "karnatake")
+    INDIAN_STATES = {
+        "karnataka": "India", "karnatake": "India", "maharashtra": "India",
+        "tamil nadu": "India", "tamilnadu": "India", "telangana": "India",
+        "andhra pradesh": "India", "kerala": "India", "gujarat": "India",
+        "rajasthan": "India", "uttar pradesh": "India", "madhya pradesh": "India",
+        "west bengal": "India", "bihar": "India", "punjab": "India",
+        "haryana": "India", "odisha": "India", "delhi": "India", "goa": "India"
+    }
+
+    # Company country from state
+    if data.get("company_state") and not data.get("company_country"):
+        state_lower = data["company_state"].lower().strip()
+        if state_lower in INDIAN_STATES:
+            data["company_country"] = "India"
+            print(f"[DETERMINISTIC] Set company_country to India from state {data['company_state']}")
+
+    # Other party country from state
+    if data.get("other_party_state") and not data.get("other_party_country"):
+        state_lower = data["other_party_state"].lower().strip()
+        if state_lower in INDIAN_STATES:
+            data["other_party_country"] = "India"
+            print(f"[DETERMINISTIC] Set other_party_country to India from state {data['other_party_state']}")
+
+    # Normalize state name capitalization and fix typos
+    for field in ["company_state", "other_party_state"]:
+        if data.get(field):
+            normalized = data[field].lower().replace("karnatake", "karnataka").title()
+            data[field] = normalized
+
+    # Normalize country capitalization
+    for field in ["company_country", "other_party_country"]:
+        if data.get(field):
+            data[field] = data[field].title()
 
 def enrich_contract_data():
     """
@@ -807,6 +948,7 @@ def enrich_contract_data():
 
     Updates st.session_state.contract_data["questions"] in place.
     """
+    print("\n>>> enrich_contract_data() called")  # DEBUG
     try:
         # Get current contract data
         current_data = st.session_state.contract_data["questions"]
@@ -843,7 +985,14 @@ def enrich_contract_data():
            - If state or country are empty but can be inferred from city, fill them
            - Ensure proper capitalization
 
-        5. **DO NOT**:
+        5. **End Date Calculation**:
+           - If agreement_start_date and period_for_evaluation are provided, calculate agreement_end_date
+           - Extract the number of days from period_for_evaluation (e.g., "60 days" → 60)
+           - Add those days to agreement_start_date to get agreement_end_date
+           - Example: start="February 1, 2026" + period="60 days" → end="April 2, 2026"
+           - Use the same date format as the start date
+
+        6. **DO NOT**:
            - Make up data that cannot be inferred
            - Change data that is already correct
            - Fill fields with guesses if no logical inference exists
@@ -882,6 +1031,13 @@ def enrich_contract_data():
 
         # Parse response
         response_text = response.choices[0].message.content.strip()
+
+        # DEBUG: Log raw AI response
+        print("\n" + "="*50)
+        print("PERPLEXITY AI RAW RESPONSE:")
+        print("="*50)
+        print(response_text)
+        print("="*50 + "\n")
 
         # Extract JSON from response
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
