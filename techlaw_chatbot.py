@@ -383,7 +383,7 @@ def get_ai_conversation_response(user_input, stage, context):
 def send_to_document_api(contract_data):
     """Send contract data to document generation API."""
     try:
-        api_url = os.getenv("DOCUMENT_API_URL", "https://your-api-endpoint.com/generate-document")
+        api_url = os.getenv("DOCUMENT_API_URL", "https://qvik.munark.in/api/v1/ai-agreement")
         
         headers = {
             "Content-Type": "application/json"
@@ -396,7 +396,7 @@ def send_to_document_api(contract_data):
             timeout=30
         )
         
-        if response.status_code == 200:
+        if response.status_code in [200, 201]:
             result = response.json()
             return result.get("document_url"), result.get("document_type")
         else:
@@ -851,7 +851,7 @@ def generate_document():
         print("="*50 + "\n")
 
         # Get API URL from environment
-        api_url = os.getenv("DOCUMENT_API_URL", "https://your-api-endpoint.com/generate-document")
+        api_url = os.getenv("DOCUMENT_API_URL", "https://qvik.munark.in/api/v1/ai-agreement")
 
         # Send POST request to document API
         headers = {
@@ -865,7 +865,7 @@ def generate_document():
             timeout=30
         )
 
-        if response.status_code == 200:
+        if response.status_code in [200, 201]:
             result = response.json()
             st.session_state.document_url = result.get("document_url", "https://example.com/documents/evaluation-agreement.pdf")
             st.success("Document generated successfully!")
