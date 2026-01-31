@@ -2,7 +2,7 @@ import streamlit as st
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from openai import OpenAI
 import requests
@@ -126,9 +126,9 @@ BUYER_QUESTIONS = [
     },
     {
         "id": 3,
-        "question": "How many days do you need for the evaluation, and when would you like it to end?",
-        "explanation": "Generally 30-60 days. We'll suggest 60 days if not specified. You can provide an end date or just the duration.",
-        "fields": ["period_for_evaluation", "agreement_end_date"]
+        "question": "How many days do you need for the evaluation?",
+        "explanation": "Generally 30-60 days. We'll suggest 60 days if not specified.",
+        "fields": ["period_for_evaluation"]
     },
     {
         "id": 4,
@@ -178,9 +178,9 @@ SUPPLIER_QUESTIONS = [
     },
     {
         "id": 3,
-        "question": "How many days will the customer need for the evaluation, and when would you like it to end?",
-        "explanation": "Generally 30-60 days. We'll suggest 60 days if not specified. You can provide an end date or just the duration.",
-        "fields": ["period_for_evaluation", "agreement_end_date"]
+        "question": "How many days will the customer need for the evaluation?",
+        "explanation": "Generally 30-60 days. We'll suggest 60 days if not specified.",
+        "fields": ["period_for_evaluation"]
     },
     {
         "id": 4,
@@ -541,7 +541,7 @@ def handle_relationship_selection(relationship_type):
 
     # Show ONLY the first question
     first_question = questions[0]
-    response += f"**Question 1 of 7:**\n\n"
+    response += f"**Question 1 of {len(questions)}:**\n\n"
     response += f"**{first_question['question']}**\n\n"
     if first_question.get('explanation'):
         response += f"_{first_question['explanation']}_\n\n"
@@ -676,7 +676,6 @@ def process_conversation_with_ai(user_input):
                     st.session_state.collected_fields.append(field_name)
 
         # Update stage if needed and trigger rerun to show new UI elements
-        stage_changed = False
         if result.get("next_stage"):
             st.session_state.conversation_stage = result["next_stage"]
             stage_changed = True
@@ -735,7 +734,10 @@ def process_conversation_with_ai(user_input):
                     response += "\n\nExcellent! I've collected all the necessary information."
                     response += "\n\n🔍 Reviewing and finalizing details..."
 
-                    # NEW: Enrich data before generating document
+                    # Calculate end date from start date + evaluation period
+                    calculate_end_date()
+
+                    # Enrich data before generating document
                     enrich_contract_data()
 
                     response += "\n\n📝 Generating your Evaluation Agreement..."
@@ -760,6 +762,43 @@ def process_conversation_with_ai(user_input):
     # Trigger rerun if stage changed to show new UI elements (buttons)
     if 'stage_changed' in locals() and stage_changed:
         st.rerun()
+
+def calculate_end_date():
+    """Calculate agreement_end_date from start_date + evaluation period."""
+    data = st.session_state.contract_data["questions"]
+    start_date_str = data.get("agreement_start_date", "")
+    period_str = data.get("period_for_evaluation", "")
+
+    if not start_date_str or not period_str:
+        return
+
+    # Extract days from period (e.g., "60 days" → 60)
+    days_match = re.search(r'(\d+)', period_str)
+    if not days_match:
+        return
+    days = int(days_match.group(1))
+
+    # Parse start date (assuming current year)
+    try:
+        current_year = datetime.now().year
+        start_date = None
+
+        # Handle various date formats
+        for fmt in ["%B %d", "%b %d", "%d %B", "%d %b", "%B %d, %Y", "%b %d, %Y"]:
+            try:
+                start_date = datetime.strptime(start_date_str.strip(), fmt)
+                if "%Y" not in fmt:
+                    start_date = start_date.replace(year=current_year)
+                break
+            except ValueError:
+                continue
+
+        if start_date:
+            end_date = start_date + timedelta(days=days)
+            data["agreement_end_date"] = end_date.strftime("%B %d")
+            print(f"Calculated end date: {data['agreement_end_date']} (start: {start_date_str} + {days} days)")
+    except Exception as e:
+        print(f"Could not calculate end date: {e}")
 
 def enrich_contract_data():
     """
