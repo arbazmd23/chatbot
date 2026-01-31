@@ -83,6 +83,21 @@ if 'contract_data' not in st.session_state:
 if 'document_url' not in st.session_state:
     st.session_state.document_url = None
 
+if 'documents_ready' not in st.session_state:
+    st.session_state.documents_ready = False
+
+if 'pdf_content' not in st.session_state:
+    st.session_state.pdf_content = None
+
+if 'word_content' not in st.session_state:
+    st.session_state.word_content = None
+
+if 'pdf_filename' not in st.session_state:
+    st.session_state.pdf_filename = None
+
+if 'word_filename' not in st.session_state:
+    st.session_state.word_filename = None
+
 if 'collected_fields' not in st.session_state:
     st.session_state.collected_fields = []
 
@@ -415,14 +430,39 @@ def display_message(role, content):
 def main():
     st.title("⚖️ TechLaw25 - Contract Assistant")
     st.markdown("---")
-    
+
     # Display chat history
     for message in st.session_state.messages:
         display_message(message["role"], message["content"])
-    
+
+    # Show download buttons if documents are ready
+    if st.session_state.get("documents_ready"):
+        st.markdown("---")
+        st.subheader("📥 Download Your Documents")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.session_state.get("pdf_content"):
+                st.download_button(
+                    label="📄 Download PDF",
+                    data=st.session_state.pdf_content,
+                    file_name=st.session_state.get("pdf_filename", "agreement.pdf"),
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+        with col2:
+            if st.session_state.get("word_content"):
+                st.download_button(
+                    label="📝 Download Word",
+                    data=st.session_state.word_content,
+                    file_name=st.session_state.get("word_filename", "agreement.docx"),
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
+        st.markdown("---")
+
     # Show interactive options based on stage
     show_interactive_options()
-    
+
     # Chat input
     if prompt := st.chat_input("Type your message here..."):
         # Add user message to chat history
@@ -655,10 +695,10 @@ def process_conversation_with_ai(user_input):
             # Generate document
             generate_document()
 
-            # Add download link to response
-            if st.session_state.document_url:
+            # Add download info to response
+            if st.session_state.get("documents_ready"):
                 response += f"\n\n✅ **Your document is ready!**"
-                response += f"\n\n📄 [Download your Evaluation Agreement]({st.session_state.document_url})"
+                response += "\n\n👇 Use the download buttons below to get your documents."
                 response += "\n\nIs there anything else I can help you with?"
             else:
                 response += "\n\n❌ There was an error generating your document. Please try again."
@@ -703,10 +743,10 @@ def process_conversation_with_ai(user_input):
                     # Generate document
                     generate_document()
 
-                    # Add download link to response
-                    if st.session_state.document_url:
+                    # Add download info to response
+                    if st.session_state.get("documents_ready"):
                         response += f"\n\n✅ **Your document is ready!**"
-                        response += f"\n\n📄 [Download your Evaluation Agreement]({st.session_state.document_url})"
+                        response += "\n\n👇 Use the download buttons below to get your documents."
                         response += "\n\nIs there anything else I can help you with?"
                     else:
                         response += "\n\n❌ There was an error generating your document. Please try again."
@@ -850,29 +890,54 @@ def generate_document():
         print(json.dumps(final_data, indent=2))
         print("="*50 + "\n")
 
-        # Get API URL from environment
-        api_url = os.getenv("DOCUMENT_API_URL", "https://qvik.munark.in/api/v1/ai-agreement")
+        base_url = "https://qvik.munark.in/api/v1"
+        headers = {"Content-Type": "application/json"}
 
-        # Send POST request to document API
-        headers = {
-            "Content-Type": "application/json"
-        }
+        # Step 1: Create agreement with loading spinner
+        with st.spinner("Creating agreement..."):
+            response = requests.post(
+                f"{base_url}/ai-agreement",
+                json=final_data,
+                headers=headers,
+                timeout=30
+            )
 
-        response = requests.post(
-            api_url,
-            json=final_data,
-            headers=headers,
-            timeout=30
-        )
+            if response.status_code not in [200, 201]:
+                st.error(f"API Error: {response.status_code} - {response.text}")
+                print(f"API Error: {response.status_code} - {response.text}")
+                return
 
-        if response.status_code in [200, 201]:
             result = response.json()
-            st.session_state.document_url = result.get("document_url", "https://example.com/documents/evaluation-agreement.pdf")
-            st.success("Document generated successfully!")
-            print(f"Document generated: {st.session_state.document_url}")
-        else:
-            st.error(f"API Error: {response.status_code} - {response.text}")
-            print(f"API Error: {response.status_code} - {response.text}")
+            agreement_id = result.get("id")
+            print(f"Agreement created with ID: {agreement_id}")
+
+        # Step 2: Fetch PDF and Word documents
+        with st.spinner("Generating documents..."):
+            # Fetch PDF
+            pdf_response = requests.get(
+                f"{base_url}/ai-agreement/{agreement_id}/pdf",
+                timeout=30
+            )
+            # Fetch Word
+            word_response = requests.get(
+                f"{base_url}/ai-agreement/{agreement_id}/word",
+                timeout=30
+            )
+
+        # Store in session state for download buttons
+        if pdf_response.status_code == 200:
+            st.session_state.pdf_content = pdf_response.content
+            st.session_state.pdf_filename = f"agreement-{agreement_id}.pdf"
+            print(f"PDF fetched: {len(pdf_response.content)} bytes")
+
+        if word_response.status_code == 200:
+            st.session_state.word_content = word_response.content
+            st.session_state.word_filename = f"agreement-{agreement_id}.docx"
+            print(f"Word fetched: {len(word_response.content)} bytes")
+
+        st.session_state.documents_ready = True
+        st.success("Documents generated successfully!")
+        st.rerun()  # Rerun to show download buttons
 
     except Exception as e:
         st.error(f"Error generating document: {str(e)}")
@@ -927,6 +992,11 @@ def reset_conversation():
         }
     }
     st.session_state.document_url = None
+    st.session_state.documents_ready = False
+    st.session_state.pdf_content = None
+    st.session_state.word_content = None
+    st.session_state.pdf_filename = None
+    st.session_state.word_filename = None
 
 # Sidebar removed - cleaner interface without status display
 
