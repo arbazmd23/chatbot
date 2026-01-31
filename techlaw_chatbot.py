@@ -1067,9 +1067,50 @@ def enrich_contract_data():
         print("Proceeding with unenriched data.")
         # Don't fail document generation if enrichment fails
 
+def swap_fields_for_buyer_role():
+    """
+    Swap company_* and other_party_* fields when user is BUYER.
+
+    The API expects:
+    - company_* = Supplier's info
+    - other_party_* = Buyer's (Client's) info
+
+    But when user selects BUYER:
+    - company_* contains Buyer's info (user's company)
+    - other_party_* contains Supplier's info
+
+    So we need to swap them for BUYER role.
+    """
+    if st.session_state.contract_type != "buyer":
+        return  # Only swap for BUYER role
+
+    data = st.session_state.contract_data["questions"]
+
+    # Fields to swap
+    swap_pairs = [
+        ("company_name", "other_party_name"),
+        ("company_address", "other_party_address"),
+        ("company_city", "other_party_city"),
+        ("company_state", "other_party_state"),
+        ("company_pincode", "other_party_pincode"),
+        ("company_country", "other_party_country"),
+    ]
+
+    print("[SWAP] Swapping company_* and other_party_* fields for BUYER role")
+
+    for field1, field2 in swap_pairs:
+        # Swap values
+        temp = data.get(field1, "")
+        data[field1] = data.get(field2, "")
+        data[field2] = temp
+        print(f"  Swapped {field1} <-> {field2}")
+
 def generate_document():
     """Generate document by calling the API."""
     try:
+        # Swap fields for BUYER role (API expects different field mapping)
+        swap_fields_for_buyer_role()
+
         # Prepare the final data structure
         final_data = {
             "contract_type": st.session_state.contract_type,
