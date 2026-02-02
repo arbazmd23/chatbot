@@ -4,7 +4,7 @@ import os
 import re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
 import requests
 
 # Load environment variables
@@ -214,32 +214,31 @@ SUPPLIER_QUESTIONS = [
     }
 ]
 
-# Initialize Perplexity client
+# Initialize Gemini client
 @st.cache_resource
-def initialize_perplexity_client():
-    """Initialize Perplexity API client."""
+def initialize_gemini_client():
+    """Initialize Gemini API client with Google AI Studio."""
     try:
-        api_key = os.getenv("PERPLEXITY_API_KEY")
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            st.error("PERPLEXITY_API_KEY not found in environment variables!")
+            st.error("GEMINI_API_KEY not found in environment variables!")
             return None
-        
-        client = OpenAI(
-            api_key=api_key,
-            base_url="https://api.perplexity.ai"
-        )
+
+        # Create Gemini client with API key (no GCP setup needed!)
+        client = genai.Client(api_key=api_key)
+
         return client
     except Exception as e:
-        st.error(f"Error initializing Perplexity API: {str(e)}")
+        st.error(f"Error initializing Gemini API: {str(e)}")
         return None
 
 # Initialize client
-perplexity_client = initialize_perplexity_client()
+gemini_client = initialize_gemini_client()
 
 def get_ai_conversation_response(user_input, stage, context):
     """Use AI to handle conversation flow and ask questions naturally."""
     try:
-        if perplexity_client is None:
+        if gemini_client is None:
             return "I apologize, but I'm having trouble connecting to my AI backend. Please try again later.", None
         
         # Build context
@@ -387,30 +386,24 @@ def get_ai_conversation_response(user_input, stage, context):
         Respond ONLY with valid JSON. Do not include any other text.
         """
         
-        response = perplexity_client.chat.completions.create(
-            model="sonar-pro",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are TechLaw25, a helpful legal contract assistant. You must respond with valid JSON only."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.7,
-            max_tokens=1000
+        # Build full prompt (combine system + user messages since Gemini uses single prompt)
+        full_prompt = f"""You are TechLaw25, a helpful legal contract assistant. You must respond with valid JSON only.
+
+{prompt}"""
+
+        response = gemini_client.models.generate_content(
+            model="models/gemini-2.5-flash",
+            contents=full_prompt
         )
-        
+
         # Parse the JSON response
         try:
-            result = json.loads(response.choices[0].message.content)
+            result = json.loads(response.text)
             return result, None
         except json.JSONDecodeError:
             # Try to extract JSON from the response
             import re
-            json_match = re.search(r'\{.*\}', response.choices[0].message.content, re.DOTALL)
+            json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
                 return result, None
@@ -1007,34 +1000,27 @@ def enrich_contract_data():
         }}
         """
 
-        # Call Perplexity AI
-        perplexity_client = initialize_perplexity_client()
-        if perplexity_client is None:
+        # Use Gemini AI client
+        if gemini_client is None:
             print("Warning: Could not initialize AI for enrichment. Skipping enrichment step.")
             return
 
-        response = perplexity_client.chat.completions.create(
-            model="sonar-pro",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a data enrichment assistant. Respond with valid JSON only."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
-            temperature=0.3,  # Lower temperature for more deterministic inference
-            max_tokens=1000
+        # Build full prompt
+        full_prompt = f"""You are a data enrichment assistant. Respond with valid JSON only.
+
+{prompt}"""
+
+        response = gemini_client.models.generate_content(
+            model="models/gemini-2.5-flash",
+            contents=full_prompt
         )
 
         # Parse response
-        response_text = response.choices[0].message.content.strip()
+        response_text = response.text.strip()
 
         # DEBUG: Log raw AI response
         print("\n" + "="*50)
-        print("PERPLEXITY AI RAW RESPONSE:")
+        print("GEMINI AI RAW RESPONSE:")
         print("="*50)
         print(response_text)
         print("="*50 + "\n")
