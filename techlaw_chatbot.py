@@ -312,46 +312,69 @@ def get_ai_conversation_response(user_input, stage, context):
             "next_stage": "..."
         }}
 
-        CRITICAL PARSING RULES FOR INDIAN ADDRESSES:
-        1. The FIRST word(s) before any address indicators (numbers, "cross", "street", "road", "nagar", "layout") is the company/party NAME
-        2. Address indicators to watch for: cross, street, road, nagar, layout, colony, phase, sector, block, main
-        3. Indian state names: Karnataka, Maharashtra, Tamil Nadu, Telangana, Kerala, Andhra Pradesh, Gujarat, Rajasthan, etc.
-        4. If a state name like "Karnataka", "karnataka", "karnatake" is present, the country is "India"
-        5. Indian pincodes are 6 digits (e.g., 560001, 503401)
+        UNIVERSAL EXTRACTION PRINCIPLE:
+        1. NEVER discard user-provided information - everything they say is intentional
+        2. If you're unsure which field something belongs to, make your best guess - don't skip it
+        3. Numbers are ALWAYS significant - extract them (pincodes, amounts, percentages, quantities)
+        4. Currency words map to codes: dollars/USD, rupees/INR, euros/EUR, pounds/GBP
+        5. Location names require geographic knowledge - infer state/country from city
+        6. When multiple values could fit a field, prefer the most specific/complete one
 
-        EXAMPLE PARSING:
-        Input: "munark 5th cross bradhshaws street nehrupuran bangalore karnataka 560001"
-        - "munark" = company_name (first token before "5th cross" address indicator)
-        - "5th cross bradhshaws street nehrupuran" = company_address
-        - "bangalore" = company_city
-        - "karnataka" = company_state
-        - "560001" = company_pincode
-        - "India" = company_country (inferred from Karnataka)
+        ADDRESS EXTRACTION RULES (Questions 6, 7):
+        Parse addresses intelligently regardless of format:
+        1. NAME: First distinct entity before address indicators (cross, street, road, main, floor, tower, nagar, layout)
+        2. ADDRESS: Everything between name and city/location identifiers
+        3. CITY: The PRIMARY city/town name - prefer major cities over localities
+           - If user says "vashi, mumbai" → city: "Mumbai" (major city takes precedence)
+           - If user says "koramangala, bangalore" → city: "Bangalore"
+           - Metro areas: Vashi/Navi Mumbai→Mumbai, Whitefield→Bangalore, Gurgaon→Delhi NCR
+        4. STATE: Infer from city if not explicit (Mumbai→Maharashtra, Bangalore/Bengaluru→Karnataka, Delhi→Delhi, Chennai→Tamil Nadu, Hyderabad→Telangana, Pune→Maharashtra, Kolkata→West Bengal)
+        5. PINCODE: ANY number at the END of the address is likely the pincode
+           - Accept ANY length (2-digit, 3-digit, 6-digit, etc.) - DO NOT validate length
+           - "mumbai 55" → pincode: "55" (EXTRACT IT, don't discard!)
+           - "bangalore 560001" → pincode: "560001"
+           - "pune 11" → pincode: "11"
+        6. COUNTRY: Default to "India" for Indian cities/states, otherwise extract or infer
 
-        EXTRACTION EXAMPLES:
-        - User: "Acme Corp, 123 Main St, NYC, NY 10001, USA"
-          extracted_fields: {{"company_name": "Acme Corp", "company_address": "123 Main St", "company_city": "NYC", "company_state": "NY", "company_pincode": "10001", "company_country": "USA"}}
+        CRITICAL ADDRESS RULES:
+        - NEVER discard numbers at the end - they ARE pincodes
+        - NEVER leave pincode empty if user provided ANY trailing number
+        - Prefer major city names over suburb/locality names for the city field
+        - Always infer state and country when city is a known Indian city
 
-        - User: "munark 5th cross bradhshaws street, nehrupuran, bangalore, karnataka, 560001"
-          extracted_fields: {{"company_name": "munark", "company_address": "5th cross bradhshaws street, nehrupuran", "company_city": "bangalore", "company_state": "karnataka", "company_pincode": "560001", "company_country": "India"}}
+        PRODUCT EXTRACTION RULES (Questions 1, 2):
+        - Product name and version: Extract separately even if provided together
+        - License count: Extract numeric value, license type: Extract type (concurrent, named-user, server, trial, standard, etc.)
 
-        - User: "TechSolutions Pvt Ltd 42 MG Road Koramangala Bangalore Karnataka 560034"
-          extracted_fields: {{"company_name": "TechSolutions Pvt Ltd", "company_address": "42 MG Road Koramangala", "company_city": "Bangalore", "company_state": "Karnataka", "company_pincode": "560034", "company_country": "India"}}
+        DURATION EXTRACTION RULES (Question 3 - Evaluation Period):
+        1. period_for_evaluation: ALWAYS include the time unit (days, weeks, months)
+        2. If user says just "30" → normalize to "30 days"
+        3. If user says "30 days" → keep as "30 days"
+        4. If user says "2 months" → keep as "2 months"
+        5. Default unit is "days" when not specified
+        - NEVER store just a number without the unit - ALWAYS include "days", "weeks", or "months"
 
-        - User: "avinash 3rd cross jp nagar hubbli karnataka 503401"
-          extracted_fields: {{"other_party_name": "avinash", "other_party_address": "3rd cross jp nagar", "other_party_city": "hubbli", "other_party_state": "karnataka", "other_party_pincode": "503401", "other_party_country": "India"}}
+        FEES EXTRACTION RULES (Question 5):
+        When user mentions ANY payment/fee information, extract ALL financial details:
+        1. fees_options: Set to "yes" if ANY amount/payment is mentioned, "no" if user says free/no fees/no charges/complimentary
+        2. currency: Extract currency code (USD, INR, EUR, GBP) or convert words (dollars→USD, rupees→INR, euros→EUR, pounds→GBP)
+        3. amount: Extract the NUMERIC value only (e.g., "5 dollars" → amount: "5", "₹500" → amount: "500")
+        4. invoicing: Extract payment timing/method (upfront, monthly, quarterly, annually, upon delivery, on completion, etc.)
+        5. credit_period: Extract credit terms if mentioned (30 days, net 60, 15 days, etc.)
+        6. late_payment_charges: "yes" if late fees/penalties mentioned, otherwise leave empty
+        7. late_payment_percentage: Extract percentage value if mentioned (2%, 1.5%, etc.)
+        8. tax_fees: "included" if tax included/inclusive, "excluded" if tax separate/extra, "exempt" if no tax applies
 
-        - User: "CloudSync Pro version 2.1"
-          extracted_fields: {{"product_to_be_evaluated": "CloudSync Pro", "product_version": "2.1"}}
+        CRITICAL FEES RULES:
+        - NEVER leave amount empty when user mentions a number with money context
+        - NEVER leave currency empty when user mentions dollars/rupees/USD/INR/etc.
+        - If user says "USD 5 with upfront payment and tax included" → extract ALL: amount="5", currency="USD", invoicing="upfront payment", tax_fees="included"
+        - If user says just "5" in fees context, still extract amount="5"
 
-        - User: "5 concurrent licenses"
-          extracted_fields: {{"number_of_licenses": "5", "license_type": "concurrent"}}
-
-        - User: "Free trial, no charges"
-          extracted_fields: {{"fees_options": "free"}}
-
-        - User: "Laws of Karnataka, India and Courts of Bangalore"
-          extracted_fields: {{"laws_which_apply": "Laws of Karnataka, India", "courts_which_resolve": "Courts of Bangalore, Karnataka"}}
+        JURISDICTION EXTRACTION RULES (Question 8):
+        - laws_which_apply: Format as "Laws of [State/Country]" - expand abbreviated answers
+        - courts_which_resolve: Format as "Courts of [City/State]" - expand abbreviated answers
+        - If user says just "Karnataka" → laws: "Laws of Karnataka, India", courts: "Courts of Karnataka, India"
 
         Stages:
         - greeting: Extract name and email from user input. Use "user_name" as extracted_field for name and "user_email" for email. You can extract them one at a time or together. If both are provided in the same message, extract the name first, and set "next_stage": "contract_type". Provide a brief acknowledgment without mentioning any specific contract types, and tell the user to look at the available agreement types shown above their message input. If name or email is missing, ask for the missing information in a friendly way.
@@ -770,6 +793,9 @@ def process_conversation_with_ai(user_input):
             # Apply deterministic rules as final fallback
             deterministic_enrichment()
 
+            # Apply safety net to catch any missed extractions
+            apply_extraction_safety_net()
+
             # Generate document
             generate_document()
 
@@ -821,6 +847,9 @@ def process_conversation_with_ai(user_input):
 
                     # Apply deterministic rules as final fallback
                     deterministic_enrichment()
+
+                    # Apply safety net to catch any missed extractions
+                    apply_extraction_safety_net()
 
                     response += "\n\n📝 Generating your Evaluation Agreement..."
 
@@ -892,6 +921,82 @@ def calculate_end_date_fallback():
     except Exception as e:
         print(f"[FALLBACK] Error calculating end date: {e}")
 
+def apply_extraction_safety_net(original_user_inputs=None):
+    """
+    Catch any data the AI missed using regex patterns.
+    Runs as a final safety net after AI extraction.
+    """
+    data = st.session_state.contract_data["questions"]
+
+    # Extract pincode from address fields if missing
+    for prefix in ['company', 'other_party']:
+        pincode_field = f'{prefix}_pincode'
+        address_field = f'{prefix}_address'
+        city_field = f'{prefix}_city'
+        state_field = f'{prefix}_state'
+
+        if not data.get(pincode_field):
+            # Combine all address-related text to search for numbers
+            full_text = ' '.join(filter(None, [
+                data.get(address_field, ''),
+                data.get(city_field, ''),
+                data.get(state_field, '')
+            ]))
+
+            # Find any standalone number (2-6 digits) that could be a pincode
+            match = re.search(r'\b(\d{2,6})\b', full_text)
+            if match:
+                data[pincode_field] = match.group(1)
+                print(f"[SAFETY NET] Extracted {pincode_field}: {match.group(1)} from address text")
+
+    # Extract amount and currency from fees if missing
+    if data.get('fees_options') in ['yes', 'paid', 'Yes', 'Paid']:
+        # If amount is missing, try to extract from any stored context
+        if not data.get('amount') and original_user_inputs:
+            fees_input = original_user_inputs.get('fees', '')
+            # Find numeric amount
+            amount_match = re.search(r'(\d+(?:\.\d{2})?)', fees_input)
+            if amount_match:
+                data['amount'] = amount_match.group(1)
+                print(f"[SAFETY NET] Extracted amount: {amount_match.group(1)}")
+
+            # Find currency if missing
+            if not data.get('currency'):
+                currency_match = re.search(r'(USD|INR|EUR|GBP|dollars?|rupees?|\$|₹|€|£)', fees_input, re.I)
+                if currency_match:
+                    currency = currency_match.group(1).upper()
+                    # Normalize currency words to codes
+                    if 'DOLLAR' in currency or currency == '$':
+                        currency = 'USD'
+                    elif 'RUPEE' in currency or currency == '₹':
+                        currency = 'INR'
+                    elif currency == '€':
+                        currency = 'EUR'
+                    elif currency == '£':
+                        currency = 'GBP'
+                    data['currency'] = currency
+                    print(f"[SAFETY NET] Extracted currency: {currency}")
+
+    # Normalize fees_options to yes/no
+    if data.get('fees_options'):
+        fees_val = data['fees_options'].lower().strip()
+        if fees_val in ['free', 'no', 'none', 'no fees', 'no charges', 'complimentary', 'zero']:
+            data['fees_options'] = 'no'
+        elif fees_val in ['yes', 'paid', 'charged', 'payable'] or data.get('amount'):
+            data['fees_options'] = 'yes'
+
+    # Normalize period_for_evaluation to include "days" if just a number
+    period = data.get('period_for_evaluation', '')
+    if period:
+        # Check if it's just a number without unit
+        period_stripped = period.strip()
+        if period_stripped.isdigit():
+            data['period_for_evaluation'] = f"{period_stripped} days"
+            print(f"[SAFETY NET] Normalized period_for_evaluation: {period_stripped} → {period_stripped} days")
+
+    return data
+
+
 def deterministic_enrichment():
     """
     Apply deterministic rules to fill missing fields.
@@ -909,6 +1014,16 @@ def deterministic_enrichment():
         "haryana": "India", "odisha": "India", "delhi": "India", "goa": "India"
     }
 
+    # Indian city to state mapping for metro areas
+    INDIAN_CITIES = {
+        "mumbai": "Maharashtra", "navi mumbai": "Maharashtra", "vashi": "Maharashtra", "thane": "Maharashtra", "pune": "Maharashtra",
+        "bangalore": "Karnataka", "bengaluru": "Karnataka", "koramangala": "Karnataka", "whitefield": "Karnataka", "electronic city": "Karnataka",
+        "chennai": "Tamil Nadu", "hyderabad": "Telangana", "kolkata": "West Bengal", "delhi": "Delhi", "new delhi": "Delhi",
+        "gurgaon": "Haryana", "gurugram": "Haryana", "noida": "Uttar Pradesh", "faridabad": "Haryana",
+        "ahmedabad": "Gujarat", "jaipur": "Rajasthan", "lucknow": "Uttar Pradesh", "kanpur": "Uttar Pradesh",
+        "hubbli": "Karnataka", "hubli": "Karnataka", "mysore": "Karnataka", "mysuru": "Karnataka"
+    }
+
     # Company country from state
     if data.get("company_state") and not data.get("company_country"):
         state_lower = data["company_state"].lower().strip()
@@ -922,6 +1037,19 @@ def deterministic_enrichment():
         if state_lower in INDIAN_STATES:
             data["other_party_country"] = "India"
             print(f"[DETERMINISTIC] Set other_party_country to India from state {data['other_party_state']}")
+
+    # Infer state from city if missing (using INDIAN_CITIES mapping)
+    for prefix in ['company', 'other_party']:
+        city_field = f'{prefix}_city'
+        state_field = f'{prefix}_state'
+        country_field = f'{prefix}_country'
+
+        if data.get(city_field) and not data.get(state_field):
+            city_lower = data[city_field].lower().strip()
+            if city_lower in INDIAN_CITIES:
+                data[state_field] = INDIAN_CITIES[city_lower]
+                data[country_field] = "India"
+                print(f"[DETERMINISTIC] Inferred {state_field}={INDIAN_CITIES[city_lower]} from city {data[city_field]}")
 
     # Normalize state name capitalization and fix typos
     for field in ["company_state", "other_party_state"]:
@@ -985,10 +1113,28 @@ def enrich_contract_data():
            - Example: start="February 1, 2026" + period="60 days" → end="April 2, 2026"
            - Use the same date format as the start date
 
-        6. **DO NOT**:
+        6. **Pincode Validation & Recovery**:
+           - If company_pincode or other_party_pincode is empty, check if the original address had ANY trailing numbers
+           - ANY number at the end of an address (even 2-digit like "55") should be treated as pincode
+           - Do NOT discard short pincodes - preserve them as provided
+           - If city is known but pincode missing, leave pincode empty (don't guess)
+
+        7. **Fees Field Validation**:
+           - If fees_options is "yes" or "paid" but amount is empty, check if a number was mentioned
+           - If fees_options is "yes" or "paid" but currency is empty, check if currency words were used
+           - Normalize: fees_options should be "yes" (for paid) or "no" (for free/no charges)
+
+        8. **Metro City Normalization**:
+           - Vashi, Navi Mumbai, Thane → city can stay, but state MUST be "Maharashtra"
+           - Koramangala, Whitefield, Electronic City → state MUST be "Karnataka"
+           - Gurgaon, Noida, Faridabad → appropriate state (Haryana/UP)
+           - Infer country as "India" for all Indian cities
+
+        9. **DO NOT**:
            - Make up data that cannot be inferred
            - Change data that is already correct
            - Fill fields with guesses if no logical inference exists
+           - Discard user-provided numbers (they are intentional)
 
         Return ONLY the enriched fields (fields that changed or were filled). Use this JSON format:
         {{
