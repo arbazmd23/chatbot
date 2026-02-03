@@ -354,6 +354,16 @@ def get_ai_conversation_response(user_input, stage, context):
         5. Default unit is "days" when not specified
         - NEVER store just a number without the unit - ALWAYS include "days", "weeks", or "months"
 
+        DATE EXTRACTION RULES (Question 4 - Start Date):
+        1. agreement_start_date: ALWAYS format as dd-MMM-yyyy (e.g., "01-Feb-2026", "23-Mar-2026")
+        2. If user says "February 1" without year → use current year (2026)
+        3. If user says "1st Feb" → format as "01-Feb-2026"
+        4. If user says "feb 1, 2026" → format as "01-Feb-2026"
+        5. Day should be 2 digits with leading zero if needed (01, 02, ... 31)
+        6. Month should be 3-letter abbreviation with first letter capitalized (Jan, Feb, Mar, Apr, May, Jun, Jul, Aug, Sep, Oct, Nov, Dec)
+        7. Year should be 4 digits
+        - ALWAYS output dates in dd-MMM-yyyy format. Current year is 2026.
+
         FEES EXTRACTION RULES (Question 5):
         When user mentions ANY payment/fee information, extract ALL financial details:
         1. fees_options: Set to "yes" if ANY amount/payment is mentioned, "no" if user says free/no fees/no charges/complimentary
@@ -903,23 +913,27 @@ def calculate_end_date_fallback():
         clean_date = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', start_date_str)
 
         start_date = None
-        for fmt in ["%B %d, %Y", "%B %d %Y", "%B %d", "%b %d, %Y", "%b %d"]:
+        # Support multiple date formats including the new dd-MMM-yyyy format
+        for fmt in ["%d-%b-%Y", "%d-%B-%Y", "%B %d, %Y", "%B %d %Y", "%B %d", "%b %d, %Y", "%b %d", "%Y-%m-%d"]:
             try:
                 start_date = datetime.strptime(clean_date.strip(), fmt)
                 if "%Y" not in fmt:
-                    start_date = start_date.replace(year=2026)
+                    # Use current year if not provided
+                    start_date = start_date.replace(year=datetime.now().year)
                 break
             except ValueError:
                 continue
 
         if start_date:
             end_date = start_date + timedelta(days=days)
-            data["agreement_end_date"] = end_date.strftime("%B %d, %Y")
+            # Output in dd-MMM-yyyy format (e.g., 02-Apr-2026)
+            data["agreement_end_date"] = end_date.strftime("%d-%b-%Y")
             print(f"[FALLBACK] Calculated end date: {data['agreement_end_date']} (from {start_date_str} + {days} days)")
         else:
             print(f"[FALLBACK] Could not parse date: {start_date_str}")
     except Exception as e:
         print(f"[FALLBACK] Error calculating end date: {e}")
+
 
 def apply_extraction_safety_net(original_user_inputs=None):
     """
@@ -993,6 +1007,8 @@ def apply_extraction_safety_net(original_user_inputs=None):
         if period_stripped.isdigit():
             data['period_for_evaluation'] = f"{period_stripped} days"
             print(f"[SAFETY NET] Normalized period_for_evaluation: {period_stripped} → {period_stripped} days")
+
+    # Date formatting is handled by AI - no Python normalization needed
 
     return data
 
@@ -1110,8 +1126,9 @@ def enrich_contract_data():
            - If agreement_start_date and period_for_evaluation are provided, calculate agreement_end_date
            - Extract the number of days from period_for_evaluation (e.g., "60 days" → 60)
            - Add those days to agreement_start_date to get agreement_end_date
-           - Example: start="February 1, 2026" + period="60 days" → end="April 2, 2026"
-           - Use the same date format as the start date
+           - Example: start="01-Feb-2026" + period="60 days" → end="02-Apr-2026"
+           - ALWAYS use dd-MMM-yyyy format (e.g., "01-Feb-2026", "15-Mar-2026")
+           - Day should be 2 digits, Month should be 3-letter abbreviation (Jan, Feb, Mar, etc.), Year should be 4 digits
 
         6. **Pincode Validation & Recovery**:
            - If company_pincode or other_party_pincode is empty, check if the original address had ANY trailing numbers
